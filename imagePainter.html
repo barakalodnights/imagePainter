@@ -1,0 +1,1317 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Image Painter - GA Setup</title>
+  <style>
+    html, body {
+      margin: 0;
+      height: 100%;
+      background: #ffffff;
+      color: #111;
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+    }
+    .app {
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      width: 100vw;
+    }
+    .toolbar {
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      padding: 10px 12px;
+      border-bottom: 1px solid #e5e5e5;
+      background: #fafafa;
+    }
+    .toolbar label {
+      font-weight: 600;
+      font-size: 14px;
+    }
+    .main {
+      flex: 1;
+      display: flex;
+      min-height: 0;
+    }
+    .panel {
+      flex: 1;
+      position: relative;
+      min-width: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: #fff;
+      border-right: 1px solid #f0f0f0;
+    }
+    .panel:last-child {
+      border-right: none;
+    }
+    canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+      background: #ffffff;
+    }
+    .hint {
+      position: absolute;
+      top: 10px;
+      left: 12px;
+      padding: 4px 8px;
+      border-radius: 6px;
+      background: rgba(0,0,0,0.04);
+      color: #333;
+      font-size: 12px;
+      pointer-events: none;
+      user-select: none;
+    }
+    .panelFooter {
+      display: flex;
+      gap: 8px;
+      padding: 8px 12px;
+      border-top: 1px solid #f0f0f0;
+      background: #fff;
+    }
+    .bottomControls {
+      display: flex;
+      gap: 8px;
+      padding: 10px 12px;
+      border-top: 1px solid #e5e5e5;
+      background: #fafafa;
+    }
+    .selectionBox {
+      position: absolute;
+      border: 1px dashed #0a84ff;
+      background: rgba(10,132,255,0.08);
+      pointer-events: none;
+    }
+  </style>
+  </head>
+<body>
+  <div class="app">
+    <div class="toolbar">
+      <label for="fileInput">Source image:</label>
+      <input id="fileInput" type="file" accept="image/*" />
+      <span id="meta" style="font-size:12px;color:#666;"></span>
+      <div style="flex:1"></div>
+      <label for="alphaInput">Brush alpha</label>
+      <input id="alphaInput" type="range" min="0.05" max="1" step="0.05" value="0.25" />
+      <label style="display:flex;align-items:center;gap:6px">
+        <input id="useSourceColor" type="checkbox" checked /> Use source colors
+      </label>
+      <label style="display:flex;align-items:center;gap:6px">
+        <input id="enableTriangle" type="checkbox" checked /> Triangle
+      </label>
+      <label style="display:flex;align-items:center;gap:6px">
+        <input id="enableGauss" type="checkbox" checked /> Soft circle
+      </label>
+      <span style="width:12px"></span>
+      <label for="popInput">Population</label>
+      <input id="popInput" type="number" min="5" max="200" step="1" value="40" style="width:64px" />
+      <label for="rateInput">Gens/sec</label>
+      <input id="rateInput" type="range" min="1" max="60" step="1" value="12" />
+      <span id="status" style="font-size:12px;color:#444;margin-left:8px"></span>
+    </div>
+    <div class="main">
+      <div class="panel" id="leftPanel">
+        <div class="hint">Left: source image</div>
+        <canvas id="sourceCanvas"></canvas>
+      </div>
+      <div class="panel" id="rightPanel">
+        <div class="hint">Right: reconstruction (blank)</div>
+        <canvas id="targetCanvas"></canvas>
+        <div id="selection" class="selectionBox" style="display:none"></div>
+      </div>
+    </div>
+    <div class="bottomControls">
+      <button id="startBtn">Start</button>
+      <button id="stopBtn">Stop</button>
+      <button id="resetBtn">Reset</button>
+      <button id="downloadBtn">Download PNG</button>
+      <button id="savePrimitivesBtn">Save primitives</button>
+      <button id="loadPrimitivesBtn">Load primitives</button>
+    </div>
+  </div>
+
+  <script>
+    const fileInput = document.getElementById('fileInput');
+    const sourceCanvas = document.getElementById('sourceCanvas');
+    const targetCanvas = document.getElementById('targetCanvas');
+    const leftPanel = document.getElementById('leftPanel');
+    const rightPanel = document.getElementById('rightPanel');
+    const selectionEl = document.getElementById('selection');
+    const meta = document.getElementById('meta');
+    const alphaInput = document.getElementById('alphaInput');
+    // removed add/clear buttons
+    const useSourceColor = document.getElementById('useSourceColor');
+    const enableTriangle = document.getElementById('enableTriangle');
+    // ellipse/rect/polygon removed
+    const enableGauss = document.getElementById('enableGauss');
+    // Brush primitive removed
+    const popInput = document.getElementById('popInput');
+    const rateInput = document.getElementById('rateInput');
+    const startBtn = document.getElementById('startBtn');
+    const stopBtn = document.getElementById('stopBtn');
+    const resetBtn = document.getElementById('resetBtn');
+    const status = document.getElementById('status');
+    const downloadBtn = document.getElementById('downloadBtn');
+    const savePrimitivesBtn = document.getElementById('savePrimitivesBtn');
+    const loadPrimitivesBtn = document.getElementById('loadPrimitivesBtn');
+    const hiddenLoadInput = (() => { const i = document.createElement('input'); i.type = 'file'; i.accept = 'application/json'; i.style.display = 'none'; document.body.appendChild(i); return i; })();
+
+    const sourceCtx = sourceCanvas.getContext('2d');
+    const targetCtx = targetCanvas.getContext('2d');
+
+    let sourceImage = null;
+    let sourceNaturalWidth = 0;
+    let sourceNaturalHeight = 0;
+    let currentDpr = 1;
+    const strokes = [];
+    // GA state
+    let running = false;
+    let generation = 0;
+    let bestFitness = NaN;
+    let lastTick = 0;
+    // Shatter animation state
+    let isShattering = false;
+    let shatterParticles = [];
+    let shatterLast = 0;
+    // Fly-in animation state
+    let isFlyingIn = false;
+    let flyItems = [];
+    let flyFinalStrokes = [];
+    let flyStart = 0;
+    // Worker-based eval state
+    let evalWorker = null;
+    let workerReady = false;
+    let isEvaluating = false;
+    let panelWidth = 0;
+    let panelHeight = 0;
+    // Multi-resolution settings
+    let targetEvalW = 0; // desired eval width; 0 means auto
+    const evalThresholds = [
+      { fitness: 0.70, width: 192 },
+      { fitness: 0.85, width: 256 },
+      { fitness: 0.92, width: 320 },
+      { fitness: 0.96, width: 384 },
+      { fitness: 0.98, width: 512 }
+    ];
+    // User-selected bounding box (in panel CSS coords)
+    let selectionRect = null; // { x, y, w, h }
+    let isSelectingBox = false;
+    let selectStartX = 0, selectStartY = 0;
+
+    function createEvalWorker() {
+      const src = `
+        let evalW=0, evalH=0, panelW=1, panelH=1;
+        let sourceData=null;
+        let baseCanvas=null, baseCtx=null, workCanvas=null, workCtx=null;
+        // WebGL state
+        let gl=null, errorProg=null, reduceProg=null, vao=null, srcTex=null, imgTex=null, fbo=null;
+        let levelTex=[], levelW=[], levelH=[]; let hasFloatRT=false;
+
+        function initGL(){
+          if (gl) return;
+          try {
+            gl = new OffscreenCanvas(1,1).getContext('webgl2', { antialias:false, premultipliedAlpha:false });
+          } catch(e){ gl=null; }
+          if (!gl) return;
+          const vs='\n#version 300 es\nprecision highp float;layout(location=0) in vec2 a;out vec2 v;void main(){v=(a+1.0)*0.5;gl_Position=vec4(a,0.0,1.0);} ';
+          const fsErr='\n#version 300 es\nprecision highp float;in vec2 v;out vec4 o;uniform sampler2D uSrc;uniform sampler2D uImg;void main(){vec3 s=texture(uSrc,v).rgb;vec3 i=texture(uImg,v).rgb;vec3 d=s-i;float e=dot(d,d);o=vec4(e,0.0,0.0,1.0);} ';
+          const fsReduce='\n#version 300 es\nprecision highp float;in vec2 v;out vec4 o;uniform sampler2D uPrev;uniform vec2 uTexel;void main(){vec2 base=v;vec2 t=uTexel;float s=0.0;s+=texture(uPrev, base + vec2(-0.25,-0.25)*t).r;s+=texture(uPrev, base + vec2(0.25,-0.25)*t).r;s+=texture(uPrev, base + vec2(-0.25,0.25)*t).r;s+=texture(uPrev, base + vec2(0.25,0.25)*t).r;o=vec4(s,0.0,0.0,1.0);} ';
+          function sh(t,s){const o=gl.createShader(t);gl.shaderSource(o,s);gl.compileShader(o);return o}
+          errorProg=gl.createProgram();gl.attachShader(errorProg,sh(gl.VERTEX_SHADER,vs));gl.attachShader(errorProg,sh(gl.FRAGMENT_SHADER,fsErr));gl.linkProgram(errorProg);
+          reduceProg=gl.createProgram();gl.attachShader(reduceProg,sh(gl.VERTEX_SHADER,vs));gl.attachShader(reduceProg,sh(gl.FRAGMENT_SHADER,fsReduce));gl.linkProgram(reduceProg);
+          vao=gl.createVertexArray();gl.bindVertexArray(vao);const buf=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,buf);gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([-1,-1,1,-1,-1,1,1,1]),gl.STATIC_DRAW);gl.enableVertexAttribArray(0);gl.vertexAttribPointer(0,2,gl.FLOAT,false,0,0);
+          srcTex=gl.createTexture();imgTex=gl.createTexture();fbo=gl.createFramebuffer();
+          hasFloatRT=!!gl.getExtension('EXT_color_buffer_float');
+        }
+
+        function ensureGLTargets(){
+          if (!gl) return;
+          levelTex=[]; levelW=[]; levelH=[];
+          let w=evalW, h=evalH;
+          while(true){
+            const tex=gl.createTexture();
+            gl.bindTexture(gl.TEXTURE_2D,tex);
+            gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.NEAREST);
+            gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.NEAREST);
+            const internal= hasFloatRT ? gl.RGBA32F : gl.RGBA;
+            const type = hasFloatRT ? gl.FLOAT : gl.UNSIGNED_BYTE;
+            gl.texImage2D(gl.TEXTURE_2D,0,internal,w,h,0,gl.RGBA,type,null);
+            levelTex.push(tex); levelW.push(w); levelH.push(h);
+            if (w===1 && h===1) break;
+            w = Math.max(1, Math.floor(w/2));
+            h = Math.max(1, Math.floor(h/2));
+          }
+          gl.bindFramebuffer(gl.FRAMEBUFFER,fbo);
+        }
+
+        function uploadTex(tex, data){
+          if (!gl) return;
+          gl.bindTexture(gl.TEXTURE_2D,tex);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.NEAREST);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.NEAREST);
+          gl.pixelStorei(gl.UNPACK_ALIGNMENT,1);
+          gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,evalW,evalH,0,gl.RGBA,gl.UNSIGNED_BYTE,data);
+        }
+
+        function computeFitnessGPU(imageData){
+          if (!gl || !errorProg) return null;
+          if (!hasFloatRT) return null;
+          ensureGLTargets();
+          // upload inputs
+          uploadTex(imgTex, imageData);
+          uploadTex(srcTex, sourceData);
+          gl.bindVertexArray(vao);
+          // Pass 0: error per-pixel into level 0
+          gl.useProgram(errorProg);
+          gl.viewport(0,0,levelW[0],levelH[0]);
+          gl.activeTexture(gl.TEXTURE0);gl.bindTexture(gl.TEXTURE_2D,srcTex);gl.uniform1i(gl.getUniformLocation(errorProg,'uSrc'),0);
+          gl.activeTexture(gl.TEXTURE1);gl.bindTexture(gl.TEXTURE_2D,imgTex);gl.uniform1i(gl.getUniformLocation(errorProg,'uImg'),1);
+          gl.bindFramebuffer(gl.FRAMEBUFFER,fbo);
+          gl.framebufferTexture2D(gl.FRAMEBUFFER,gl.COLOR_ATTACHMENT0,gl.TEXTURE_2D,levelTex[0],0);
+          gl.drawArrays(gl.TRIANGLE_STRIP,0,4);
+          // Reductions
+          gl.useProgram(reduceProg);
+          for (let i=1;i<levelTex.length;i++){
+            const prev=levelTex[i-1];
+            const w=levelW[i], h=levelH[i];
+            const prevW=levelW[i-1], prevH=levelH[i-1];
+            gl.viewport(0,0,w,h);
+            gl.activeTexture(gl.TEXTURE0);
+            gl.bindTexture(gl.TEXTURE_2D, prev);
+            gl.uniform1i(gl.getUniformLocation(reduceProg,'uPrev'),0);
+            gl.uniform2f(gl.getUniformLocation(reduceProg,'uTexel'), 1.0/prevW, 1.0/prevH);
+            gl.bindFramebuffer(gl.FRAMEBUFFER,fbo);
+            gl.framebufferTexture2D(gl.FRAMEBUFFER,gl.COLOR_ATTACHMENT0,gl.TEXTURE_2D,levelTex[i],0);
+            gl.drawArrays(gl.TRIANGLE_STRIP,0,4);
+          }
+          // Read 1x1 sum
+          const last=levelTex[levelTex.length-1];
+          gl.bindFramebuffer(gl.FRAMEBUFFER,fbo);
+          gl.framebufferTexture2D(gl.FRAMEBUFFER,gl.COLOR_ATTACHMENT0,gl.TEXTURE_2D,last,0);
+          const px=new Float32Array(4);
+          gl.readPixels(0,0,1,1,gl.RGBA,gl.FLOAT,px);
+          const sse=px[0];
+          const n=evalW*evalH;
+          const mse=sse/Math.max(1,n);
+          return 1 - Math.min(1,mse);
+        }
+
+        function drawStroke(ctx, s, sx, sy) {
+          ctx.save();
+          ctx.globalAlpha = s.alpha;
+          ctx.fillStyle = 'rgb(' + s.r + ',' + s.g + ',' + s.b + ')';
+          if (s.type === 'triangle') {
+            ctx.beginPath();
+            ctx.moveTo(s.p1.x * sx, s.p1.y * sy);
+            ctx.lineTo(s.p2.x * sx, s.p2.y * sy);
+            ctx.lineTo(s.p3.x * sx, s.p3.y * sy);
+            ctx.closePath();
+            ctx.fill();
+          } else if (s.type === 'ellipse') {
+            ctx.beginPath();
+            ctx.ellipse(s.cx * sx, s.cy * sy, s.rx * sx, s.ry * sy, s.rot || 0, 0, Math.PI * 2);
+            ctx.fill();
+          } else if (s.type === 'rect') {
+            ctx.translate(s.cx * sx, s.cy * sy);
+            ctx.rotate(s.rot || 0);
+            ctx.fillRect(-s.w * sx / 2, -s.h * sy / 2, s.w * sx, s.h * sy);
+          } else if (s.type === 'polygon') {
+            ctx.beginPath();
+            const n = Math.max(3, Math.floor(s.sides || 3));
+            const step = (Math.PI * 2) / n;
+            for (let i = 0; i < n; i++) {
+              const a = (s.rot || 0) + i * step;
+              const x = s.cx * sx + Math.cos(a) * s.r * Math.max(sx, sy);
+              const y = s.cy * sy + Math.sin(a) * s.r * Math.max(sx, sy);
+              if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+            }
+            ctx.closePath();
+            ctx.fill();
+          }
+          ctx.restore();
+        }
+
+        function renderStrokes(ctx, strokes) {
+          const sx = evalW / panelW;
+          const sy = evalH / panelH;
+          ctx.save();
+          ctx.clearRect(0,0,evalW,evalH);
+          ctx.fillStyle = '#fff';
+          ctx.fillRect(0,0,evalW,evalH);
+          for (const s of strokes) drawStroke(ctx, s, sx, sy);
+          ctx.restore();
+        }
+
+        function computeFitnessFromCtx(ctx) {
+          if (!sourceData) return -Infinity;
+          const img = ctx.getImageData(0,0,evalW,evalH).data;
+          // Try GPU path if available
+          if (gl){
+            const fit = computeFitnessGPU(img);
+            if (fit!=null) return fit;
+          }
+          const n = evalW*evalH; let sse=0;
+          for (let i=0;i<n;i++){
+            const j=i*4;
+            const dr = sourceData[j] - img[j];
+            const dg = sourceData[j+1] - img[j+1];
+            const db = sourceData[j+2] - img[j+2];
+            sse += dr*dr + dg*dg + db*db;
+          }
+          const mse = sse / (n*3*255*255);
+          return 1 - mse;
+        }
+
+        function ensureCanvases(){
+          if (!baseCanvas){
+            baseCanvas = new OffscreenCanvas(evalW, evalH);
+            baseCtx = baseCanvas.getContext('2d', { willReadFrequently: true });
+            workCanvas = new OffscreenCanvas(evalW, evalH);
+            workCtx = workCanvas.getContext('2d', { willReadFrequently: true });
+          }
+        }
+
+        self.onmessage = (e)=>{
+          const msg = e.data;
+          if (msg.type==='setup'){
+            evalW = msg.evalW; evalH = msg.evalH; panelW = msg.panelW; panelH = msg.panelH;
+            baseCanvas = null; baseCtx=null; workCanvas=null; workCtx=null;
+            ensureCanvases();
+            initGL();
+            ensureGLTargets();
+            self.postMessage({type:'ready'});
+          } else if (msg.type==='setSource'){
+            // msg.source is ArrayBuffer
+            sourceData = new Uint8ClampedArray(msg.source);
+            self.postMessage({type:'ok'});
+          } else if (msg.type==='setStrokes'){
+            ensureCanvases();
+            renderStrokes(baseCtx, msg.strokes||[]);
+            self.postMessage({type:'ok'});
+          } else if (msg.type==='evalCurrent'){
+            ensureCanvases();
+            const f = computeFitnessFromCtx(baseCtx);
+            self.postMessage({type:'result', fitness:f});
+          } else if (msg.type==='evalCandidates'){
+            ensureCanvases();
+            const candidates = msg.candidates||[];
+            let bestIdx=-1; let bestFit=-Infinity;
+            for (let i=0;i<candidates.length;i++){
+              // copy base to work
+              workCtx.clearRect(0,0,evalW,evalH);
+              workCtx.drawImage(baseCanvas,0,0);
+              const c = candidates[i];
+              if (c && c.type!=='delete'){
+                const sx = evalW / panelW; const sy = evalH / panelH;
+                drawStroke(workCtx, c, sx, sy);
+              } else if (c && c.type==='delete'){
+                // re-render excluding index
+                workCtx.clearRect(0,0,evalW,evalH);
+                workCtx.fillStyle = '#fff'; workCtx.fillRect(0,0,evalW,evalH);
+                const strokes = msg.strokes||[];
+                const idx = Math.max(0, Math.min(strokes.length-1, c.index|0));
+                const sx = evalW / panelW; const sy = evalH / panelH;
+                for (let k=0;k<strokes.length;k++){
+                  if (k===idx) continue;
+                  drawStroke(workCtx, strokes[k], sx, sy);
+                }
+              }
+              const f = computeFitnessFromCtx(workCtx);
+              if (f>bestFit){ bestFit=f; bestIdx=i; }
+            }
+            self.postMessage({type:'best', bestIndex:bestIdx, bestFitness:bestFit});
+          }
+        };
+      `;
+      const blob = new Blob([src], { type: 'application/javascript' });
+      const url = URL.createObjectURL(blob);
+      const w = new Worker(url);
+      URL.revokeObjectURL(url);
+      w.onmessage = (e) => {
+        const msg = e.data;
+        if (msg.type === 'ready') { workerReady = true; }
+      };
+      return w;
+    }
+
+    // Offscreen evaluation canvases
+    const evalSource = document.createElement('canvas');
+    const evalCand = document.createElement('canvas');
+    const evalSrcCtx = evalSource.getContext('2d');
+    const evalCandCtx = evalCand.getContext('2d');
+    let evalW = 0, evalH = 0;
+    let evalSourceData = null;
+
+    function setCanvasSizeToPanel(canvas, panel) {
+      const dpr = Math.max(1, Math.min(3, window.devicePixelRatio || 1));
+      currentDpr = dpr;
+      const rect = panel.getBoundingClientRect();
+      const cssWidth = Math.max(1, Math.floor(rect.width));
+      const cssHeight = Math.max(1, Math.floor(rect.height));
+      canvas.style.width = cssWidth + 'px';
+      canvas.style.height = cssHeight + 'px';
+      canvas.width = Math.max(1, Math.floor(cssWidth * dpr));
+      canvas.height = Math.max(1, Math.floor(cssHeight * dpr));
+      const ctx = canvas.getContext('2d');
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = 'high';
+    }
+
+    function fitContain(srcW, srcH, dstW, dstH) {
+      const scale = Math.min(dstW / srcW, dstH / srcH);
+      const w = srcW * scale;
+      const h = srcH * scale;
+      const x = (dstW - w) / 2;
+      const y = (dstH - h) / 2;
+      return { x, y, w, h };
+    }
+
+    function drawSource() {
+      const rect = leftPanel.getBoundingClientRect();
+      const ctx = sourceCtx;
+      ctx.save();
+      ctx.clearRect(0, 0, rect.width, rect.height);
+      if (sourceImage) {
+        const box = fitContain(sourceNaturalWidth, sourceNaturalHeight, rect.width, rect.height);
+        ctx.drawImage(sourceImage, box.x, box.y, box.w, box.h);
+      } else {
+        ctx.fillStyle = '#fff';
+        ctx.fillRect(0, 0, rect.width, rect.height);
+      }
+      ctx.restore();
+    }
+
+    function clearCanvasFully(ctx, canvas) {
+      // Clear the entire pixel buffer irrespective of current transform
+      ctx.save();
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.fillStyle = '#fff';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.restore();
+    }
+
+    function clearTarget() {
+      clearCanvasFully(targetCtx, targetCanvas);
+    }
+
+    function renderTarget() {
+      if (isShattering) {
+        renderShatter();
+        return;
+      }
+      if (isFlyingIn) {
+        renderFlyIn();
+        return;
+      }
+      clearCanvasFully(targetCtx, targetCanvas);
+      targetCtx.save();
+      for (const s of strokes) drawStroke(targetCtx, s);
+      targetCtx.restore();
+      // Draw selection overlay rectangle if present (CSS element handles main display)
+    }
+
+    function getStrokeCenter(s) {
+      if (s.type === 'triangle') {
+        return { cx: (s.p1.x + s.p2.x + s.p3.x) / 3, cy: (s.p1.y + s.p2.y + s.p3.y) / 3 };
+      }
+      if (s.type === 'ellipse') {
+        return { cx: s.cx, cy: s.cy };
+      }
+      if (s.type === 'rect') {
+        return { cx: s.cx, cy: s.cy };
+      }
+      if (s.type === 'polygon') {
+        return { cx: s.cx, cy: s.cy };
+      }
+      if (s.type === 'brush') {
+        return { cx: (s.x1 + s.x2) / 2, cy: (s.y1 + s.y2) / 2 };
+      }
+      return { cx: 0, cy: 0 };
+    }
+
+    function renderShatter() {
+      clearCanvasFully(targetCtx, targetCanvas);
+      const rect = rightPanel.getBoundingClientRect();
+      targetCtx.save();
+      for (const p of shatterParticles) {
+        targetCtx.save();
+        // Translate to particle offset then rotate around original center
+        const dx = p.x - p.cx;
+        const dy = p.y - p.cy;
+        targetCtx.translate(dx, dy);
+        targetCtx.translate(p.cx, p.cy);
+        targetCtx.rotate(p.angle);
+        targetCtx.translate(-p.cx, -p.cy);
+        const prevAlpha = p.stroke.alpha;
+        p.stroke.alpha = prevAlpha * p.fade;
+        drawStroke(targetCtx, p.stroke);
+        p.stroke.alpha = prevAlpha;
+        targetCtx.restore();
+      }
+      targetCtx.restore();
+    }
+
+    function startShatterAnimation() {
+      if (isShattering || strokes.length === 0) return;
+      const rect = rightPanel.getBoundingClientRect();
+      isShattering = true;
+      shatterParticles = strokes.map(s => {
+        const c = getStrokeCenter(s);
+        // Velocity biased away from center of canvas
+        const fromCenterX = c.cx - rect.width / 2;
+        const fromCenterY = c.cy - rect.height / 3; // bias upward a bit
+        const dist = Math.hypot(fromCenterX, fromCenterY) + 1e-3;
+        const dirX = fromCenterX / dist;
+        const dirY = fromCenterY / dist;
+        const speed = 120 + Math.random() * 300;
+        return {
+          stroke: JSON.parse(JSON.stringify(s)),
+          cx: c.cx, cy: c.cy,
+          x: c.cx, y: c.cy,
+          vx: dirX * speed + (Math.random() - 0.5) * 120,
+          vy: dirY * speed + (Math.random() - 0.5) * 120,
+          angle: (Math.random() - 0.5) * 0.5,
+          angVel: (Math.random() - 0.5) * 3.5,
+          fade: 1
+        };
+      });
+      shatterLast = performance.now();
+      requestAnimationFrame(shatterFrame);
+    }
+
+    function shatterFrame(now) {
+      if (!isShattering) return;
+      const dt = Math.min(0.033, (now - shatterLast) / 1000);
+      shatterLast = now;
+      const rect = rightPanel.getBoundingClientRect();
+      const g = 900; // gravity px/s^2
+      const air = 0.995; // air drag
+      let alive = 0;
+      for (const p of shatterParticles) {
+        p.vy += g * dt;
+        p.vx *= air; p.vy *= air;
+        p.x += p.vx * dt;
+        p.y += p.vy * dt;
+        p.angle += p.angVel * dt;
+        // fade out after falling off screen
+        if (p.y > rect.height + 80) {
+          p.fade *= 0.85;
+        }
+        if (p.fade > 0.05) alive++;
+      }
+      renderShatter();
+      if (alive === 0) {
+        isShattering = false;
+        shatterParticles = [];
+        // Now actually reset
+        strokes.length = 0;
+        generation = 0;
+        bestFitness = evaluateCurrentFitness();
+        renderTarget();
+        updateStatus();
+        return;
+      }
+      requestAnimationFrame(shatterFrame);
+    }
+
+    // Fly-in animation: loaded strokes spawn from outside and fly to place
+    function startFlyInAnimation(finalStrokes) {
+      if (!finalStrokes || finalStrokes.length === 0) {
+        strokes.length = 0;
+        renderTarget();
+        return;
+      }
+      const rect = rightPanel.getBoundingClientRect();
+      isFlyingIn = true;
+      flyFinalStrokes = finalStrokes.map(s => JSON.parse(JSON.stringify(s)));
+      flyItems = flyFinalStrokes.map(s => {
+        const c = getStrokeCenter(s);
+        const angle = Math.random() * Math.PI * 2;
+        const R = Math.max(rect.width, rect.height) * (0.8 + Math.random() * 0.6);
+        const sx = c.cx + Math.cos(angle) * R;
+        const sy = c.cy + Math.sin(angle) * R;
+        return {
+          stroke: JSON.parse(JSON.stringify(s)),
+          cx: c.cx,
+          cy: c.cy,
+          sx,
+          sy,
+          rot0: (Math.random() - 0.5) * 2.5,
+          rot1: 0,
+          t0: Math.random() * 200, // ms delay
+          dur: 800 + Math.random() * 600,
+        };
+      });
+      flyStart = performance.now();
+      // Hide current strokes during animation
+      strokes.length = 0;
+      requestAnimationFrame(flyInFrame);
+    }
+
+    function easeInOutCubic(t) {
+      return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+    }
+
+    function renderFlyIn() {
+      clearCanvasFully(targetCtx, targetCanvas);
+      targetCtx.save();
+      const now = performance.now();
+      let allDone = true;
+      for (const it of flyItems) {
+        const localT = Math.max(0, now - flyStart - it.t0);
+        const p = Math.max(0, Math.min(1, localT / it.dur));
+        if (p < 1) allDone = false;
+        const e = easeInOutCubic(p);
+        const x = it.sx + (it.cx - it.sx) * e;
+        const y = it.sy + (it.cy - it.sy) * e;
+        const a = it.rot0 + (it.rot1 - it.rot0) * e;
+        targetCtx.save();
+        targetCtx.translate(x - it.cx, y - it.cy);
+        targetCtx.translate(it.cx, it.cy);
+        targetCtx.rotate(a);
+        targetCtx.translate(-it.cx, -it.cy);
+        // Fade in
+        const prevAlpha = it.stroke.alpha;
+        it.stroke.alpha = prevAlpha * (0.2 + 0.8 * e);
+        drawStroke(targetCtx, it.stroke);
+        it.stroke.alpha = prevAlpha;
+        targetCtx.restore();
+      }
+      targetCtx.restore();
+      if (allDone) {
+        isFlyingIn = false;
+        flyItems = [];
+        // Commit final strokes
+        for (const s of flyFinalStrokes) strokes.push(s);
+        flyFinalStrokes = [];
+        // Recompute GA baseline at end
+        computeEvalSize();
+        updateEvalSource();
+        bestFitness = evaluateCurrentFitness();
+        renderTarget();
+        updateStatus();
+      } else {
+        requestAnimationFrame(flyInFrame);
+      }
+    }
+
+    function flyInFrame() {
+      if (!isFlyingIn) return;
+      renderFlyIn();
+    }
+
+    function randomBetween(min, max) {
+      return min + Math.random() * (max - min);
+    }
+
+    function randomTriangleIn(rect) {
+      // Center-biased position
+      const bounds = selectionRect ? selectionRect : { x: rect.width * 0.1, y: rect.height * 0.1, w: rect.width * 0.8, h: rect.height * 0.8 };
+      const cx = randomBetween(bounds.x, bounds.x + bounds.w);
+      const cy = randomBetween(bounds.y, bounds.y + bounds.h);
+      const radius = randomBetween(8, Math.min(rect.width, rect.height) * 0.12);
+      const angle = Math.random() * Math.PI * 2;
+      const jitter = () => randomBetween(-Math.PI / 6, Math.PI / 6);
+      const a1 = angle + jitter();
+      const a2 = angle + (2 * Math.PI / 3) + jitter();
+      const a3 = angle + (4 * Math.PI / 3) + jitter();
+      const p1 = { x: cx + Math.cos(a1) * radius, y: cy + Math.sin(a1) * radius };
+      const p2 = { x: cx + Math.cos(a2) * radius, y: cy + Math.sin(a2) * radius };
+      const p3 = { x: cx + Math.cos(a3) * radius, y: cy + Math.sin(a3) * radius };
+      return { cx, cy, p1, p2, p3 };
+    }
+
+    function randomEllipseIn(rect) {
+      const b = selectionRect ? selectionRect : { x: rect.width * 0.05, y: rect.height * 0.05, w: rect.width * 0.9, h: rect.height * 0.9 };
+      const cx = randomBetween(b.x, b.x + b.w);
+      const cy = randomBetween(b.y, b.y + b.h);
+      const maxR = Math.min(rect.width, rect.height) * 0.15;
+      const rx = randomBetween(6, maxR);
+      const ry = randomBetween(6, maxR);
+      const rot = randomBetween(0, Math.PI * 2);
+      return { cx, cy, rx, ry, rot };
+    }
+
+    function randomRectIn(rect) {
+      const b = selectionRect ? selectionRect : { x: rect.width * 0.05, y: rect.height * 0.05, w: rect.width * 0.9, h: rect.height * 0.9 };
+      const cx = randomBetween(b.x, b.x + b.w);
+      const cy = randomBetween(b.y, b.y + b.h);
+      const maxS = Math.min(rect.width, rect.height) * 0.2;
+      const w = randomBetween(8, maxS);
+      const h = randomBetween(8, maxS);
+      const rot = randomBetween(0, Math.PI * 2);
+      return { cx, cy, w, h, rot };
+    }
+
+    function getSourceSampleColorAt(u, v) {
+      const srcRect = leftPanel.getBoundingClientRect();
+      const box = fitContain(sourceNaturalWidth, sourceNaturalHeight, srcRect.width, srcRect.height);
+      const sx = Math.floor((box.x + u * box.w) * currentDpr);
+      const sy = Math.floor((box.y + v * box.h) * currentDpr);
+      let r = 128, g = 128, b = 128, a = 255;
+      try {
+        const data = sourceCtx.getImageData(sx, sy, 1, 1).data;
+        r = data[0]; g = data[1]; b = data[2]; a = data[3];
+      } catch (e) {
+        // Cross-origin or out of bounds; keep default gray
+      }
+      return { r, g, b, a };
+    }
+
+    function drawStroke(ctx, s) {
+      ctx.save();
+      ctx.globalAlpha = s.alpha;
+      ctx.fillStyle = `rgb(${s.r},${s.g},${s.b})`;
+      if (s.type === 'triangle') {
+        ctx.beginPath();
+        ctx.moveTo(s.p1.x, s.p1.y);
+        ctx.lineTo(s.p2.x, s.p2.y);
+        ctx.lineTo(s.p3.x, s.p3.y);
+        ctx.closePath();
+        ctx.fill();
+      } else if (s.type === 'gauss') {
+        const cx = s.cx, cy = s.cy, r = Math.max(1, s.r);
+        const edge = Math.max(0, Math.min(1, s.edge != null ? s.edge : 0));
+        const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, r);
+        // Linear alpha falloff to edgeAlpha: alpha(t) = alpha * (edge + (1-edge)*(1 - t))
+        const stops = [0.0, 0.25, 0.5, 0.75, 1.0];
+        for (const t of stops) {
+          const a = s.alpha * (edge + (1 - edge) * (1 - t));
+          grad.addColorStop(t, `rgba(${s.r},${s.g},${s.b},${Math.max(0, Math.min(1, a))})`);
+        }
+        ctx.fillStyle = grad;
+        ctx.beginPath();
+        ctx.arc(cx, cy, r, 0, Math.PI * 2);
+        ctx.closePath();
+        ctx.fill();
+      } else if (s.type === 'ellipse') {
+        ctx.beginPath();
+        ctx.ellipse(s.cx, s.cy, s.rx, s.ry, s.rot || 0, 0, Math.PI * 2);
+        ctx.fill();
+      } else if (s.type === 'rect') {
+        ctx.translate(s.cx, s.cy);
+        ctx.rotate(s.rot || 0);
+        ctx.fillRect(-s.w / 2, -s.h / 2, s.w, s.h);
+      } else if (s.type === 'polygon') {
+        ctx.beginPath();
+        const n = Math.max(3, Math.floor(s.sides || 3));
+        const step = (Math.PI * 2) / n;
+        for (let i = 0; i < n; i++) {
+          const a = (s.rot || 0) + i * step;
+          const x = s.cx + Math.cos(a) * s.r;
+          const y = s.cy + Math.sin(a) * s.r;
+          if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+        }
+        ctx.closePath();
+        ctx.fill();
+      }
+      ctx.restore();
+    }
+
+    function drawStrokeScaled(ctx, s, scaleX, scaleY) {
+      ctx.save();
+      if (s.type === 'gauss') {
+        const scaled = { ...s, cx: s.cx * scaleX, cy: s.cy * scaleY, r: s.r * Math.max(scaleX, scaleY), sigma: (s.sigma || s.r * 0.4) * Math.max(scaleX, scaleY) };
+        drawStroke(ctx, scaled);
+      } else {
+        ctx.scale(scaleX, scaleY);
+        drawStroke(ctx, s);
+      }
+      ctx.restore();
+    }
+
+    function addRandomTriangleStroke() {
+      const rect = rightPanel.getBoundingClientRect();
+      const stroke = generateRandomStroke(rect);
+      if (stroke.type === 'delete') {
+        if (strokes.length > 0) {
+          const idx = Math.max(0, Math.min(strokes.length - 1, stroke.index));
+          strokes.splice(idx, 1);
+        }
+      } else {
+        strokes.push(stroke);
+      }
+      renderTarget();
+    }
+
+    function generateRandomStroke(rect) {
+      const enabled = [];
+      if (enableTriangle && enableTriangle.checked) enabled.push('triangle');
+      if (enableGauss && enableGauss.checked) enabled.push('gauss');
+      // Special delete primitive: with small probability, remove a recent stroke
+      if (strokes.length > 0 && Math.random() < 0.1) {
+        return { type: 'delete', index: Math.floor(Math.random() * strokes.length), r: 0, g: 0, b: 0, alpha: 1 };
+      }
+      const type = enabled.length ? enabled[Math.floor(Math.random() * enabled.length)] : 'triangle';
+      const alpha = Math.max(0.01, Math.min(1, parseFloat(alphaInput.value)));
+      if (type === 'triangle') {
+        const tri = randomTriangleIn(rect);
+        const u = tri.cx / rect.width;
+        const v = tri.cy / rect.height;
+        const c = useSourceColor.checked && sourceImage ? getSourceSampleColorAt(u, v)
+          : { r: Math.floor(Math.random() * 256), g: Math.floor(Math.random() * 256), b: Math.floor(Math.random() * 256), a: 255 };
+        return { type: 'triangle', p1: tri.p1, p2: tri.p2, p3: tri.p3, r: c.r, g: c.g, b: c.b, alpha };
+      } else if (type === 'gauss') {
+        const b = selectionRect ? selectionRect : { x: rect.width * 0.05, y: rect.height * 0.05, w: rect.width * 0.9, h: rect.height * 0.9 };
+        const cx = randomBetween(b.x, b.x + b.w);
+        const cy = randomBetween(b.y, b.y + b.h);
+        const maxR = Math.min(rect.width, rect.height) * 0.15;
+        const radius = randomBetween(6, maxR);
+        const c = useSourceColor.checked && sourceImage ? getSourceSampleColorAt(cx / rect.width, cy / rect.height)
+          : { r: Math.floor(Math.random() * 256), g: Math.floor(Math.random() * 256), b: Math.floor(Math.random() * 256), a: 255 };
+        const edge = Math.random() * 0.6; // edge alpha between 0..0.6
+        return { type: 'gauss', cx, cy, r: radius, edge, r: c.r, g: c.g, b: c.b, alpha };
+      }
+    }
+
+    function randomPolygonIn(rect) {
+      const b = selectionRect ? selectionRect : { x: rect.width * 0.05, y: rect.height * 0.05, w: rect.width * 0.9, h: rect.height * 0.9 };
+      const cx = randomBetween(b.x, b.x + b.w);
+      const cy = randomBetween(b.y, b.y + b.h);
+      const r = randomBetween(8, Math.min(rect.width, rect.height) * 0.15);
+      const rot = randomBetween(0, Math.PI * 2);
+      const sides = Math.floor(randomBetween(3, 8.99));
+      return { cx, cy, r, rot, sides };
+    }
+
+    // brush primitive removed
+
+    // ---- Genetic algorithm helpers ----
+    function computeEvalSize() {
+      const rect = rightPanel.getBoundingClientRect();
+      // Choose width based on fitness milestones
+      let desired = targetEvalW;
+      if (!desired) {
+        desired = 128;
+        for (const step of evalThresholds) {
+          if (!isNaN(bestFitness) && bestFitness >= step.fitness) desired = step.width;
+        }
+      }
+      const maxW = Math.min(Math.floor(rect.width), desired);
+      const minW = 64;
+      const w = Math.max(minW, Math.floor(maxW));
+      const h = Math.max(1, Math.floor(rect.height * (w / Math.max(1, rect.width))));
+      evalW = w; evalH = h;
+      evalSource.width = evalW; evalSource.height = evalH;
+      evalCand.width = evalW; evalCand.height = evalH;
+      panelWidth = Math.floor(rect.width);
+      panelHeight = Math.floor(rect.height);
+      // (Re)create worker if size changed
+      if (!evalWorker) {
+        evalWorker = createEvalWorker();
+        evalWorker.onmessage = (e)=>{
+          const msg = e.data;
+          if (msg.type==='ready') { workerReady = true; }
+        };
+      }
+      if (evalWorker) {
+        workerReady = false;
+        evalWorker.postMessage({ type: 'setup', evalW, evalH, panelW: panelWidth, panelH: panelHeight });
+      }
+    }
+
+    function updateEvalSource() {
+      const ctx = evalSrcCtx;
+      ctx.save();
+      ctx.clearRect(0, 0, evalW, evalH);
+      ctx.fillStyle = '#fff';
+      ctx.fillRect(0, 0, evalW, evalH);
+      if (sourceImage) {
+        const box = fitContain(sourceNaturalWidth, sourceNaturalHeight, evalW, evalH);
+        ctx.drawImage(sourceImage, box.x, box.y, box.w, box.h);
+      }
+      ctx.restore();
+      try {
+        evalSourceData = ctx.getImageData(0, 0, evalW, evalH).data;
+        if (evalWorker) {
+          const buf = new Uint8ClampedArray(evalSourceData); // copy to avoid detaching our local reference
+          evalWorker.postMessage({ type: 'setSource', source: buf.buffer }, [buf.buffer]);
+        }
+      } catch (e) {
+        evalSourceData = null;
+      }
+    }
+
+    function evaluateCurrentFitness() {
+      if (!evalSourceData) return NaN;
+      const rightRect = rightPanel.getBoundingClientRect();
+      const sx = rightRect.width > 0 ? evalW / rightRect.width : 1;
+      const sy = rightRect.height > 0 ? evalH / rightRect.height : 1;
+      evalCandCtx.save();
+      evalCandCtx.clearRect(0, 0, evalW, evalH);
+      evalCandCtx.fillStyle = '#fff';
+      evalCandCtx.fillRect(0, 0, evalW, evalH);
+      for (const s of strokes) drawStrokeScaled(evalCandCtx, s, sx, sy);
+      evalCandCtx.restore();
+      let candData;
+      try {
+        candData = evalCandCtx.getImageData(0, 0, evalW, evalH).data;
+      } catch (e) {
+        return NaN;
+      }
+      const n = evalW * evalH;
+      let sse = 0;
+      for (let i = 0; i < n; i++) {
+        const j = i * 4;
+        const dr = evalSourceData[j] - candData[j];
+        const dg = evalSourceData[j + 1] - candData[j + 1];
+        const db = evalSourceData[j + 2] - candData[j + 2];
+        sse += dr * dr + dg * dg + db * db;
+      }
+      const mse = sse / (n * 3 * 255 * 255);
+      return 1 - mse;
+    }
+
+    function generateRandomCandidate() {
+      const rect = rightPanel.getBoundingClientRect();
+      return generateRandomStroke(rect);
+    }
+
+    function computeFitnessForCandidate(candidateStroke) {
+      if (!evalSourceData) return -Infinity;
+      if (evalWorker && workerReady) {
+        return new Promise((resolve) => {
+          const handler = (e) => {
+            const msg = e.data;
+            if (msg.type === 'best') {
+              evalWorker.removeEventListener('message', handler);
+              // The worker will send the best among provided candidates; here we send just one
+              resolve(msg.bestFitness);
+            }
+          };
+          evalWorker.addEventListener('message', handler);
+          evalWorker.postMessage({ type: 'evalCandidates', candidates: [candidateStroke], strokes });
+        });
+      }
+      const rightRect = rightPanel.getBoundingClientRect();
+      const sx = rightRect.width > 0 ? evalW / rightRect.width : 1;
+      const sy = rightRect.height > 0 ? evalH / rightRect.height : 1;
+      evalCandCtx.save();
+      evalCandCtx.clearRect(0, 0, evalW, evalH);
+      evalCandCtx.fillStyle = '#fff';
+      evalCandCtx.fillRect(0, 0, evalW, evalH);
+      if (candidateStroke && candidateStroke.type === 'delete') {
+        const idx = Math.max(0, Math.min(strokes.length - 1, candidateStroke.index));
+        for (let i = 0; i < strokes.length; i++) {
+          if (i === idx) continue;
+          drawStrokeScaled(evalCandCtx, strokes[i], sx, sy);
+        }
+      } else {
+        for (const s of strokes) drawStrokeScaled(evalCandCtx, s, sx, sy);
+        if (candidateStroke) drawStrokeScaled(evalCandCtx, candidateStroke, sx, sy);
+      }
+      evalCandCtx.restore();
+      let candData;
+      try {
+        candData = evalCandCtx.getImageData(0, 0, evalW, evalH).data;
+      } catch (e) {
+        return -Infinity;
+      }
+      const n = evalW * evalH;
+      let sse = 0;
+      for (let i = 0; i < n; i++) {
+        const j = i * 4;
+        const dr = evalSourceData[j] - candData[j];
+        const dg = evalSourceData[j + 1] - candData[j + 1];
+        const db = evalSourceData[j + 2] - candData[j + 2];
+        sse += dr * dr + dg * dg + db * db;
+      }
+      const mse = sse / (n * 3 * 255 * 255);
+      return 1 - mse;
+    }
+
+    async function stepGeneration() {
+      if (!sourceImage || !evalSourceData) return false;
+      const pop = Math.max(1, Math.min(500, parseInt(popInput.value || '40', 10)));
+      let bestCand = null; let bestCandFitness = -Infinity;
+      if (evalWorker && workerReady) {
+        // Batch candidates and evaluate in worker in one round-trip
+        const cands = Array.from({length: pop}, () => generateRandomCandidate());
+        const result = await new Promise((resolve) => {
+          const handler = (e) => {
+            const msg = e.data;
+            if (msg.type === 'best') {
+              evalWorker.removeEventListener('message', handler);
+              resolve(msg);
+            }
+          };
+          evalWorker.addEventListener('message', handler);
+          evalWorker.postMessage({ type: 'setStrokes', strokes });
+          evalWorker.postMessage({ type: 'evalCandidates', candidates: cands, strokes });
+        });
+        bestCandFitness = result.bestFitness;
+        bestCand = cands[Math.max(0, Math.min(cands.length - 1, result.bestIndex))];
+      } else {
+        for (let i = 0; i < pop; i++) {
+          const cand = generateRandomCandidate();
+          const f = computeFitnessForCandidate(cand);
+          if (f > bestCandFitness) {
+            bestCandFitness = f;
+            bestCand = cand;
+          }
+        }
+      }
+      const current = isNaN(bestFitness) ? (await Promise.resolve(evaluateCurrentFitness())) : bestFitness;
+      if (isNaN(bestFitness)) bestFitness = current;
+      const improved = bestCand && bestCandFitness > current;
+      if (improved) {
+        if (bestCand.type === 'delete') {
+          const idx = Math.max(0, Math.min(strokes.length - 1, bestCand.index));
+          strokes.splice(idx, 1);
+        } else {
+          strokes.push(bestCand);
+        }
+        bestFitness = bestCandFitness;
+      }
+      generation += 1;
+      renderTarget();
+      updateStatus();
+      return improved;
+    }
+
+    function updateStatus() {
+      const pct = isNaN(bestFitness) ? '—' : (bestFitness * 100).toFixed(2) + '%';
+      status.textContent = `Gen ${generation} | Fitness ${pct} | Strokes ${strokes.length}`;
+    }
+
+    function resetGA() {
+      strokes.length = 0;
+      generation = 0;
+      bestFitness = evaluateCurrentFitness();
+      renderTarget();
+      updateStatus();
+    }
+
+    function tick(now) {
+      if (!running) return;
+      if (!lastTick) lastTick = now;
+      const gensPerSec = Math.max(1, Math.min(120, parseInt(rateInput.value || '12', 10)));
+      const interval = 1000 / gensPerSec;
+      if (now - lastTick >= interval) {
+        stepGeneration();
+        lastTick = now;
+      }
+      requestAnimationFrame(tick);
+    }
+
+    function resizeAll() {
+      setCanvasSizeToPanel(sourceCanvas, leftPanel);
+      setCanvasSizeToPanel(targetCanvas, rightPanel);
+      computeEvalSize();
+      drawSource();
+      updateEvalSource();
+      bestFitness = evaluateCurrentFitness();
+      renderTarget();
+      updateStatus();
+    }
+
+    fileInput.addEventListener('change', (e) => {
+      const file = e.target.files && e.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = () => {
+        const img = new Image();
+        img.onload = () => {
+          sourceImage = img;
+          sourceNaturalWidth = img.naturalWidth;
+          sourceNaturalHeight = img.naturalHeight;
+          meta.textContent = `${file.name} — ${sourceNaturalWidth}×${sourceNaturalHeight}`;
+          computeEvalSize();
+          drawSource();
+          updateEvalSource();
+          bestFitness = evaluateCurrentFitness();
+          renderTarget();
+          updateStatus();
+        };
+        img.src = reader.result;
+      };
+      reader.readAsDataURL(file);
+    });
+
+    // add/clear removed
+    startBtn.addEventListener('click', () => {
+      if (!sourceImage) { alert('Load a source image first.'); return; }
+      computeEvalSize();
+      updateEvalSource();
+      bestFitness = evaluateCurrentFitness();
+      if (!running) { running = true; lastTick = 0; requestAnimationFrame(tick); }
+    });
+    stopBtn.addEventListener('click', () => { running = false; });
+    resetBtn.addEventListener('click', () => {
+      running = false;
+      if (strokes.length > 0) {
+        startShatterAnimation();
+      } else {
+        resetGA();
+      }
+    });
+    function renderReconstructionToSize(outW, outH) {
+      const rightRect = rightPanel.getBoundingClientRect();
+      const scaleX = rightRect.width > 0 ? outW / rightRect.width : 1;
+      const scaleY = rightRect.height > 0 ? outH / rightRect.height : 1;
+      const off = document.createElement('canvas');
+      off.width = Math.max(1, Math.floor(outW));
+      off.height = Math.max(1, Math.floor(outH));
+      const ctx = off.getContext('2d');
+      ctx.save();
+      ctx.fillStyle = '#fff';
+      ctx.fillRect(0, 0, off.width, off.height);
+      for (const s of strokes) drawStrokeScaled(ctx, s, scaleX, scaleY);
+      ctx.restore();
+      return off;
+    }
+
+    downloadBtn.addEventListener('click', () => {
+      try {
+        if (sourceImage && sourceNaturalWidth > 0 && sourceNaturalHeight > 0) {
+          const off = renderReconstructionToSize(sourceNaturalWidth, sourceNaturalHeight);
+          const url = off.toDataURL('image/png');
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = 'reconstruction.png';
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+        } else {
+          const url = targetCanvas.toDataURL('image/png');
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = 'reconstruction.png';
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+        }
+      } catch (e) {
+        alert('Unable to download image.');
+      }
+    });
+
+    function deepClone(obj) { return JSON.parse(JSON.stringify(obj)); }
+
+    function scaleStroke(s, sx, sy) {
+      const c = deepClone(s);
+      if (c.type === 'triangle') {
+        c.p1.x *= sx; c.p1.y *= sy; c.p2.x *= sx; c.p2.y *= sy; c.p3.x *= sx; c.p3.y *= sy;
+      } else if (c.type === 'ellipse') {
+        c.cx *= sx; c.cy *= sy; c.rx *= sx; c.ry *= sy; // anisotropic okay
+      } else if (c.type === 'rect') {
+        c.cx *= sx; c.cy *= sy; c.w *= sx; c.h *= sy;
+      } else if (c.type === 'polygon') {
+        c.cx *= sx; c.cy *= sy; c.r *= Math.max(sx, sy);
+      } else if (c.type === 'brush') {
+        c.x1 *= sx; c.y1 *= sy; c.x2 *= sx; c.y2 *= sy; c.thickness *= (sx + sy) * 0.5; c.jitterPos *= (sx + sy) * 0.5;
+      }
+      return c;
+    }
+
+    savePrimitivesBtn.addEventListener('click', () => {
+      try {
+        const rect = rightPanel.getBoundingClientRect();
+        const payload = {
+          version: 1,
+          canvas: { width: Math.floor(rect.width), height: Math.floor(rect.height) },
+          strokes
+        };
+        const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'primitives.json';
+        document.body.appendChild(a);
+        a.click();
+        setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url); }, 0);
+      } catch (e) {
+        alert('Unable to save primitives.');
+      }
+    });
+
+    loadPrimitivesBtn.addEventListener('click', () => {
+      hiddenLoadInput.value = '';
+      hiddenLoadInput.click();
+    });
+
+    hiddenLoadInput.addEventListener('change', async (e) => {
+      const file = e.target.files && e.target.files[0];
+      if (!file) return;
+      try {
+        const text = await file.text();
+        const data = JSON.parse(text);
+        const arr = Array.isArray(data) ? data : (Array.isArray(data.strokes) ? data.strokes : null);
+        if (!arr) { alert('Invalid primitives file.'); return; }
+        const savedW = data.canvas && data.canvas.width ? data.canvas.width : null;
+        const savedH = data.canvas && data.canvas.height ? data.canvas.height : null;
+        const rect = rightPanel.getBoundingClientRect();
+        const sx = savedW ? rect.width / savedW : 1;
+        const sy = savedH ? rect.height / savedH : 1;
+        // stop shatter/fly if active
+        isShattering = false; shatterParticles = [];
+        isFlyingIn = false; flyItems = []; flyFinalStrokes = [];
+        const finalStrokes = arr.map(s => scaleStroke(s, sx, sy));
+        startFlyInAnimation(finalStrokes);
+      } catch (err) {
+        console.error(err);
+        alert('Failed to load primitives.');
+      }
+    });
+
+    window.addEventListener('resize', resizeAll);
+    // Initial layout
+    requestAnimationFrame(resizeAll);
+
+    // Selection interactions on rightPanel
+    rightPanel.addEventListener('mousedown', (e) => {
+      const rect = rightPanel.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+      // If click outside existing selection, start new; if click outside panel or selection exists and click outside, reset
+      isSelectingBox = true;
+      selectStartX = x; selectStartY = y;
+      selectionRect = { x, y, w: 0, h: 0 };
+      selectionEl.style.display = 'block';
+      selectionEl.style.left = x + 'px';
+      selectionEl.style.top = y + 'px';
+      selectionEl.style.width = '0px';
+      selectionEl.style.height = '0px';
+    });
+
+    rightPanel.addEventListener('mousemove', (e) => {
+      if (!isSelectingBox) return;
+      const rect = rightPanel.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+      const x0 = Math.min(selectStartX, x);
+      const y0 = Math.min(selectStartY, y);
+      const w = Math.abs(x - selectStartX);
+      const h = Math.abs(y - selectStartY);
+      selectionRect = { x: x0, y: y0, w, h };
+      selectionEl.style.left = x0 + 'px';
+      selectionEl.style.top = y0 + 'px';
+      selectionEl.style.width = w + 'px';
+      selectionEl.style.height = h + 'px';
+    });
+
+    const finishSelection = () => {
+      isSelectingBox = false;
+      // If box is tiny, treat as reset (clear selection)
+      if (!selectionRect || selectionRect.w < 6 || selectionRect.h < 6) {
+        selectionRect = null;
+        selectionEl.style.display = 'none';
+      }
+    };
+
+    rightPanel.addEventListener('mouseup', finishSelection);
+    rightPanel.addEventListener('mouseleave', () => { if (isSelectingBox) finishSelection(); });
+
+    // Click on left panel resets bounds quickly
+    leftPanel.addEventListener('mousedown', () => {
+      selectionRect = null;
+      selectionEl.style.display = 'none';
+    });
+  </script>
+</body>
+</html>
+
