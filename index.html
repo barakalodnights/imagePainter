@@ -103,9 +103,6 @@
       <label style="display:flex;align-items:center;gap:6px">
         <input id="enableTriangle" type="checkbox" checked /> Triangle
       </label>
-      <label style="display:flex;align-items:center;gap:6px">
-        <input id="enableGauss" type="checkbox" checked /> Soft circle
-      </label>
       <span style="width:12px"></span>
       <label for="popInput">Population</label>
       <input id="popInput" type="number" min="5" max="200" step="1" value="40" style="width:64px" />
@@ -143,12 +140,8 @@
     const selectionEl = document.getElementById('selection');
     const meta = document.getElementById('meta');
     const alphaInput = document.getElementById('alphaInput');
-    // removed add/clear buttons
     const useSourceColor = document.getElementById('useSourceColor');
     const enableTriangle = document.getElementById('enableTriangle');
-    // ellipse/rect/polygon removed
-    const enableGauss = document.getElementById('enableGauss');
-    // Brush primitive removed
     const popInput = document.getElementById('popInput');
     const rateInput = document.getElementById('rateInput');
     const startBtn = document.getElementById('startBtn');
@@ -188,6 +181,7 @@
     let isEvaluating = false;
     let panelWidth = 0;
     let panelHeight = 0;
+
     // Multi-resolution settings
     let targetEvalW = 0; // desired eval width; 0 means auto
     const evalThresholds = [
@@ -530,6 +524,9 @@
       if (s.type === 'brush') {
         return { cx: (s.x1 + s.x2) / 2, cy: (s.y1 + s.y2) / 2 };
       }
+      if (s.type === 'brushImg') {
+        return { cx: s.cx, cy: s.cy };
+      }
       return { cx: 0, cy: 0 };
     }
 
@@ -766,61 +763,19 @@
       ctx.save();
       ctx.globalAlpha = s.alpha;
       ctx.fillStyle = `rgb(${s.r},${s.g},${s.b})`;
-      if (s.type === 'triangle') {
-        ctx.beginPath();
-        ctx.moveTo(s.p1.x, s.p1.y);
-        ctx.lineTo(s.p2.x, s.p2.y);
-        ctx.lineTo(s.p3.x, s.p3.y);
-        ctx.closePath();
-        ctx.fill();
-      } else if (s.type === 'gauss') {
-        const cx = s.cx, cy = s.cy, r = Math.max(1, s.r);
-        const edge = Math.max(0, Math.min(1, s.edge != null ? s.edge : 0));
-        const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, r);
-        // Linear alpha falloff to edgeAlpha: alpha(t) = alpha * (edge + (1-edge)*(1 - t))
-        const stops = [0.0, 0.25, 0.5, 0.75, 1.0];
-        for (const t of stops) {
-          const a = s.alpha * (edge + (1 - edge) * (1 - t));
-          grad.addColorStop(t, `rgba(${s.r},${s.g},${s.b},${Math.max(0, Math.min(1, a))})`);
-        }
-        ctx.fillStyle = grad;
-        ctx.beginPath();
-        ctx.arc(cx, cy, r, 0, Math.PI * 2);
-        ctx.closePath();
-        ctx.fill();
-      } else if (s.type === 'ellipse') {
-        ctx.beginPath();
-        ctx.ellipse(s.cx, s.cy, s.rx, s.ry, s.rot || 0, 0, Math.PI * 2);
-        ctx.fill();
-      } else if (s.type === 'rect') {
-        ctx.translate(s.cx, s.cy);
-        ctx.rotate(s.rot || 0);
-        ctx.fillRect(-s.w / 2, -s.h / 2, s.w, s.h);
-      } else if (s.type === 'polygon') {
-        ctx.beginPath();
-        const n = Math.max(3, Math.floor(s.sides || 3));
-        const step = (Math.PI * 2) / n;
-        for (let i = 0; i < n; i++) {
-          const a = (s.rot || 0) + i * step;
-          const x = s.cx + Math.cos(a) * s.r;
-          const y = s.cy + Math.sin(a) * s.r;
-          if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
-        }
-        ctx.closePath();
-        ctx.fill();
-      }
+      ctx.beginPath();
+      ctx.moveTo(s.p1.x, s.p1.y);
+      ctx.lineTo(s.p2.x, s.p2.y);
+      ctx.lineTo(s.p3.x, s.p3.y);
+      ctx.closePath();
+      ctx.fill();
       ctx.restore();
     }
 
     function drawStrokeScaled(ctx, s, scaleX, scaleY) {
       ctx.save();
-      if (s.type === 'gauss') {
-        const scaled = { ...s, cx: s.cx * scaleX, cy: s.cy * scaleY, r: s.r * Math.max(scaleX, scaleY), sigma: (s.sigma || s.r * 0.4) * Math.max(scaleX, scaleY) };
-        drawStroke(ctx, scaled);
-      } else {
-        ctx.scale(scaleX, scaleY);
-        drawStroke(ctx, s);
-      }
+      ctx.scale(scaleX, scaleY);
+      drawStroke(ctx, s);
       ctx.restore();
     }
 
@@ -841,7 +796,6 @@
     function generateRandomStroke(rect) {
       const enabled = [];
       if (enableTriangle && enableTriangle.checked) enabled.push('triangle');
-      if (enableGauss && enableGauss.checked) enabled.push('gauss');
       // Special delete primitive: with small probability, remove a recent stroke
       if (strokes.length > 0 && Math.random() < 0.1) {
         return { type: 'delete', index: Math.floor(Math.random() * strokes.length), r: 0, g: 0, b: 0, alpha: 1 };
@@ -855,16 +809,6 @@
         const c = useSourceColor.checked && sourceImage ? getSourceSampleColorAt(u, v)
           : { r: Math.floor(Math.random() * 256), g: Math.floor(Math.random() * 256), b: Math.floor(Math.random() * 256), a: 255 };
         return { type: 'triangle', p1: tri.p1, p2: tri.p2, p3: tri.p3, r: c.r, g: c.g, b: c.b, alpha };
-      } else if (type === 'gauss') {
-        const b = selectionRect ? selectionRect : { x: rect.width * 0.05, y: rect.height * 0.05, w: rect.width * 0.9, h: rect.height * 0.9 };
-        const cx = randomBetween(b.x, b.x + b.w);
-        const cy = randomBetween(b.y, b.y + b.h);
-        const maxR = Math.min(rect.width, rect.height) * 0.15;
-        const radius = randomBetween(6, maxR);
-        const c = useSourceColor.checked && sourceImage ? getSourceSampleColorAt(cx / rect.width, cy / rect.height)
-          : { r: Math.floor(Math.random() * 256), g: Math.floor(Math.random() * 256), b: Math.floor(Math.random() * 256), a: 255 };
-        const edge = Math.random() * 0.6; // edge alpha between 0..0.6
-        return { type: 'gauss', cx, cy, r: radius, edge, r: c.r, g: c.g, b: c.b, alpha };
       }
     }
 
@@ -973,7 +917,8 @@
 
     function computeFitnessForCandidate(candidateStroke) {
       if (!evalSourceData) return -Infinity;
-      if (evalWorker && workerReady) {
+        canUseWorker = true;
+      if (canUseWorker) {
         return new Promise((resolve) => {
           const handler = (e) => {
             const msg = e.data;
@@ -991,6 +936,7 @@
       const sx = rightRect.width > 0 ? evalW / rightRect.width : 1;
       const sy = rightRect.height > 0 ? evalH / rightRect.height : 1;
       evalCandCtx.save();
+      evalCandCtx.setTransform(1,0,0,1,0,0);
       evalCandCtx.clearRect(0, 0, evalW, evalH);
       evalCandCtx.fillStyle = '#fff';
       evalCandCtx.fillRect(0, 0, evalW, evalH);
@@ -1028,7 +974,8 @@
       if (!sourceImage || !evalSourceData) return false;
       const pop = Math.max(1, Math.min(500, parseInt(popInput.value || '40', 10)));
       let bestCand = null; let bestCandFitness = -Infinity;
-      if (evalWorker && workerReady) {
+      const canUseWorker = evalWorker && workerReady;
+      if (canUseWorker) {
         // Batch candidates and evaluate in worker in one round-trip
         const cands = Array.from({length: pop}, () => generateRandomCandidate());
         const result = await new Promise((resolve) => {
@@ -1058,7 +1005,7 @@
       const current = isNaN(bestFitness) ? (await Promise.resolve(evaluateCurrentFitness())) : bestFitness;
       if (isNaN(bestFitness)) bestFitness = current;
       const improved = bestCand && bestCandFitness > current;
-      if (improved) {
+      if (improved && bestCand) {
         if (bestCand.type === 'delete') {
           const idx = Math.max(0, Math.min(strokes.length - 1, bestCand.index));
           strokes.splice(idx, 1);
@@ -1066,6 +1013,15 @@
           strokes.push(bestCand);
         }
         bestFitness = bestCandFitness;
+      } else if (!bestCand) {
+        // If no candidate was produced (e.g., brushes not ready), add a small triangle to allow progress
+        const rect = rightPanel.getBoundingClientRect();
+        const tri = randomTriangleIn(rect);
+        const u = tri.cx / rect.width; const v = tri.cy / rect.height;
+        const c = useSourceColor.checked && sourceImage ? getSourceSampleColorAt(u, v)
+          : { r: Math.floor(Math.random()*256), g: Math.floor(Math.random()*256), b: Math.floor(Math.random()*256), a: 255 };
+        strokes.push({ type:'triangle', p1:tri.p1, p2:tri.p2, p3:tri.p3, r:c.r, g:c.g, b:c.b, alpha: Math.max(0.05, parseFloat(alphaInput.value)||0.25) });
+        bestFitness = evaluateCurrentFitness();
       }
       generation += 1;
       renderTarget();
