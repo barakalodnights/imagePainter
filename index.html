@@ -296,34 +296,13 @@
           ctx.save();
           ctx.globalAlpha = s.alpha;
           ctx.fillStyle = 'rgb(' + s.r + ',' + s.g + ',' + s.b + ')';
-          if (s.type === 'triangle') {
-            ctx.beginPath();
-            ctx.moveTo(s.p1.x * sx, s.p1.y * sy);
-            ctx.lineTo(s.p2.x * sx, s.p2.y * sy);
-            ctx.lineTo(s.p3.x * sx, s.p3.y * sy);
-            ctx.closePath();
-            ctx.fill();
-          } else if (s.type === 'ellipse') {
-            ctx.beginPath();
-            ctx.ellipse(s.cx * sx, s.cy * sy, s.rx * sx, s.ry * sy, s.rot || 0, 0, Math.PI * 2);
-            ctx.fill();
-          } else if (s.type === 'rect') {
-            ctx.translate(s.cx * sx, s.cy * sy);
-            ctx.rotate(s.rot || 0);
-            ctx.fillRect(-s.w * sx / 2, -s.h * sy / 2, s.w * sx, s.h * sy);
-          } else if (s.type === 'polygon') {
-            ctx.beginPath();
-            const n = Math.max(3, Math.floor(s.sides || 3));
-            const step = (Math.PI * 2) / n;
-            for (let i = 0; i < n; i++) {
-              const a = (s.rot || 0) + i * step;
-              const x = s.cx * sx + Math.cos(a) * s.r * Math.max(sx, sy);
-              const y = s.cy * sy + Math.sin(a) * s.r * Math.max(sx, sy);
-              if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
-            }
-            ctx.closePath();
-            ctx.fill();
-          }
+
+          ctx.beginPath();
+          ctx.moveTo(s.p1.x * sx, s.p1.y * sy);
+          ctx.lineTo(s.p2.x * sx, s.p2.y * sy);
+          ctx.lineTo(s.p3.x * sx, s.p3.y * sy);
+          ctx.closePath();
+          ctx.fill();
           ctx.restore();
         }
 
@@ -509,25 +488,7 @@
     }
 
     function getStrokeCenter(s) {
-      if (s.type === 'triangle') {
-        return { cx: (s.p1.x + s.p2.x + s.p3.x) / 3, cy: (s.p1.y + s.p2.y + s.p3.y) / 3 };
-      }
-      if (s.type === 'ellipse') {
-        return { cx: s.cx, cy: s.cy };
-      }
-      if (s.type === 'rect') {
-        return { cx: s.cx, cy: s.cy };
-      }
-      if (s.type === 'polygon') {
-        return { cx: s.cx, cy: s.cy };
-      }
-      if (s.type === 'brush') {
-        return { cx: (s.x1 + s.x2) / 2, cy: (s.y1 + s.y2) / 2 };
-      }
-      if (s.type === 'brushImg') {
-        return { cx: s.cx, cy: s.cy };
-      }
-      return { cx: 0, cy: 0 };
+      return { cx: (s.p1.x + s.p2.x + s.p3.x) / 3, cy: (s.p1.y + s.p2.y + s.p3.y) / 3 };
     }
 
     function renderShatter() {
@@ -722,28 +683,7 @@
       return { cx, cy, p1, p2, p3 };
     }
 
-    function randomEllipseIn(rect) {
-      const b = selectionRect ? selectionRect : { x: rect.width * 0.05, y: rect.height * 0.05, w: rect.width * 0.9, h: rect.height * 0.9 };
-      const cx = randomBetween(b.x, b.x + b.w);
-      const cy = randomBetween(b.y, b.y + b.h);
-      const maxR = Math.min(rect.width, rect.height) * 0.15;
-      const rx = randomBetween(6, maxR);
-      const ry = randomBetween(6, maxR);
-      const rot = randomBetween(0, Math.PI * 2);
-      return { cx, cy, rx, ry, rot };
-    }
-
-    function randomRectIn(rect) {
-      const b = selectionRect ? selectionRect : { x: rect.width * 0.05, y: rect.height * 0.05, w: rect.width * 0.9, h: rect.height * 0.9 };
-      const cx = randomBetween(b.x, b.x + b.w);
-      const cy = randomBetween(b.y, b.y + b.h);
-      const maxS = Math.min(rect.width, rect.height) * 0.2;
-      const w = randomBetween(8, maxS);
-      const h = randomBetween(8, maxS);
-      const rot = randomBetween(0, Math.PI * 2);
-      return { cx, cy, w, h, rot };
-    }
-
+  
     function getSourceSampleColorAt(u, v) {
       const srcRect = leftPanel.getBoundingClientRect();
       const box = fitContain(sourceNaturalWidth, sourceNaturalHeight, srcRect.width, srcRect.height);
